@@ -79,7 +79,7 @@ const EXAMPLE_QUERIES = [
   "How does quantum teleportation work?",
 ]
 
-const PIPELINE_TIMING: Record<string, number> = {
+const PIPELINE_TIMING = {
   "query-understanding": 600,
   retrieval: 500,
   reranking: 700,
@@ -87,17 +87,7 @@ const PIPELINE_TIMING: Record<string, number> = {
   generation: 2100,
   citations: 400,
   complete: 150,
-}
-
-const STAGE_LABELS: Record<string, string> = {
-  "query-understanding": "query-understanding",
-  retrieval: "retrieval",
-  reranking: "reranking",
-  assembly: "assembly",
-  generation: "generation",
-  citations: "citations",
-  complete: "complete",
-}
+} as const
 
 const SUB_QUERIES = [
   "What is the no-communication theorem in quantum mechanics",
@@ -106,30 +96,6 @@ const SUB_QUERIES = [
 ]
 
 const ENTITIES = ["no-communication theorem", "quantum entanglement", "Ghirardi-Rimini-Weber", "Bell's theorem", "quantum teleportation", "superdense coding", "special relativity"]
-
-function generateSSELog(stages: string[], timings: number[]): SSELogEntry[] {
-  let cumulative = 0
-  const entries: SSELogEntry[] = []
-  const dataMap: Record<string, string> = {
-    "query-understanding": "intent=scientific-explanation entities=7",
-    retrieval: "count=47 topScore=0.94",
-    reranking: "passed=5 discarded=42 threshold=0.71",
-    assembly: "promptLength=3847",
-    generation: "streaming...",
-    citations: "sources=5 followUps=3 latencyMs=2340",
-    complete: "latencyMs=2340",
-  }
-  stages.forEach((stage, i) => {
-    cumulative += timings[i]
-    entries.push({
-      time: cumulative,
-      event: stage,
-      data: dataMap[stage] ?? "",
-    })
-  })
-  entries.push({ time: cumulative + 8, event: "done", data: "" })
-  return entries
-}
 
 function ConfidenceBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100)
@@ -257,6 +223,7 @@ function QueryTree({ query }: { query: string }) {
         {children.map((_, i) => {
           const cx = w / 2 - (children.length - 1) * (childSpacing / 2) + i * childSpacing
           const gs = grandchildren[i]
+          if (!gs) return null
           return gs.map((_, j) => {
             const gx = cx - (gs.length - 1) * 20 + j * 40
             return (
@@ -294,6 +261,7 @@ function QueryTree({ query }: { query: string }) {
         {children.map((_, i) => {
           const cx = w / 2 - (children.length - 1) * (childSpacing / 2) + i * childSpacing
           const gs = grandchildren[i]
+          if (!gs) return null
           return gs.map((g, j) => {
             const gx = cx - (gs.length - 1) * 20 + j * 40
             return (
@@ -326,15 +294,23 @@ function KnowledgeGraph({ sources, onNodeClick }: { sources: Source[]; onNodeCli
   const edges = useMemo(() => {
     const e: { source: number; target: number }[] = []
     for (let i = 0; i < sources.length; i++) {
+      const si = sources[i]
+      if (!si) continue
       for (let j = i + 1; j < sources.length; j++) {
-        if (Math.abs(sources[i].score - sources[j].score) < 0.15) {
-          e.push({ source: sources[i].id, target: sources[j].id })
+        const sj = sources[j]
+        if (!sj) continue
+        if (Math.abs(si.score - sj.score) < 0.15) {
+          e.push({ source: si.id, target: sj.id })
         }
       }
     }
     if (e.length === 0) {
       for (let i = 0; i < sources.length - 1; i++) {
-        e.push({ source: sources[i].id, target: sources[i + 1].id })
+        const si = sources[i]
+        const sj = sources[i + 1]
+        if (si && sj) {
+          e.push({ source: si.id, target: sj.id })
+        }
       }
     }
     return e
@@ -416,7 +392,7 @@ function StageMetadata({
           <div style={{ marginTop: 4, color: "var(--text3)", fontSize: 9 }}>
             needsRecency: false
           </div>
-          <QueryTree query={SUB_QUERIES[0]} />
+          <QueryTree query={SUB_QUERIES[0] ?? ""} />
         </div>
       )
     case "retrieval":
@@ -635,11 +611,15 @@ function SemanticHeatmap({ sources }: { sources: Source[] }) {
   const pairs = useMemo(() => {
     const p: { i: number; j: number; score: number }[] = []
     for (let i = 0; i < sources.length; i++) {
+      const si = sources[i]
+      if (!si) continue
       for (let j = 0; j < sources.length; j++) {
+        const sj = sources[j]
+        if (!sj) continue
         if (i === j) {
           p.push({ i, j, score: 1 })
         } else {
-          const base = 1 - Math.abs(sources[i].score - sources[j].score)
+          const base = 1 - Math.abs(si.score - sj.score)
           const noise = Math.sin(i * 7 + j * 13) * 0.1
           p.push({ i, j, score: Math.max(0, Math.min(1, base + noise)) })
         }
@@ -701,7 +681,7 @@ const STAGE_ORDER = [
   "generation",
   "citations",
   "complete",
-]
+] as const
 
 export default function Home() {
   const [query, setQuery] = useState("")
@@ -810,13 +790,17 @@ export default function Home() {
             // Mark previous as done
             if (idx > 0) {
               const prevStage = STAGE_ORDER[idx - 1]
-              next[prevStage] = { ...next[prevStage], status: "done", elapsed: delay }
+              if (prevStage && next[prevStage]) {
+                next[prevStage] = { ...next[prevStage], status: "done", elapsed: delay }
+              }
             }
-            next[stage] = { ...next[stage], status: "active", elapsed: 0 }
+            if (stage && next[stage]) {
+              next[stage] = { ...next[stage], status: "active", elapsed: 0 }
+            }
             return next
           })
 
-          latencyData.push({ stage, time: PIPELINE_TIMING[stage] })
+          latencyData.push({ stage, time: PIPELINE_TIMING[stage] ?? 0 })
           setLatencyEntries([...latencyData])
 
           sseEntries.push({
@@ -830,9 +814,9 @@ export default function Home() {
             // Mark reranking as done and set sources
             setStages((prev) => {
               const next = { ...prev }
-              next.reranking = { ...next.reranking, status: "done", elapsed: PIPELINE_TIMING.reranking }
-              next.assembly = { ...next.assembly, status: "done", elapsed: PIPELINE_TIMING.assembly }
-              next.generation = { ...next.generation, status: "active", elapsed: 0 }
+              if (next.reranking) next.reranking = { ...next.reranking, status: "done", elapsed: PIPELINE_TIMING.reranking }
+              if (next.assembly) next.assembly = { ...next.assembly, status: "done", elapsed: PIPELINE_TIMING.assembly }
+              if (next.generation) next.generation = { ...next.generation, status: "active", elapsed: 0 }
               return next
             })
             setSources(MOCK_SOURCES)
@@ -843,9 +827,9 @@ export default function Home() {
           if (stage === "complete") {
             setStages((prev) => {
               const next = { ...prev }
-              next.generation = { ...next.generation, status: "done", elapsed: PIPELINE_TIMING.generation }
-              next.citations = { ...next.citations, status: "done", elapsed: PIPELINE_TIMING.citations }
-              next.complete = { ...next.complete, status: "done", elapsed: PIPELINE_TIMING.complete }
+              if (next.generation) next.generation = { ...next.generation, status: "done", elapsed: PIPELINE_TIMING.generation }
+              if (next.citations) next.citations = { ...next.citations, status: "done", elapsed: PIPELINE_TIMING.citations }
+              if (next.complete) next.complete = { ...next.complete, status: "done", elapsed: PIPELINE_TIMING.complete }
               return next
             })
             if (tokenIntervalRef.current) {
@@ -881,7 +865,7 @@ export default function Home() {
   )
 
   function handleReplay() {
-    const q = query.trim() || EXAMPLE_QUERIES[0]
+    const q = query.trim() || EXAMPLE_QUERIES[0] || "What is the no-communication theorem?"
     runPipeline(q)
   }
 
@@ -984,16 +968,20 @@ export default function Home() {
       })
 
       for (let i = 0; i < particles.length; i++) {
+        const pi = particles[i]
+        if (!pi) continue
         for (let j = i + 1; j < particles.length; j++) {
-          const dx = particles[i].x - particles[j].x
-          const dy = particles[i].y - particles[j].y
+          const pj = particles[j]
+          if (!pj) continue
+          const dx = pi.x - pj.x
+          const dy = pi.y - pj.y
           const dist = Math.sqrt(dx * dx + dy * dy)
           if (dist < 80) {
             ctx.strokeStyle = `rgba(90, 88, 96, ${0.15 * (1 - dist / 80)})`
             ctx.lineWidth = 0.5
             ctx.beginPath()
-            ctx.moveTo(particles[i].x, particles[i].y)
-            ctx.lineTo(particles[j].x, particles[j].y)
+            ctx.moveTo(pi.x, pi.y)
+            ctx.lineTo(pj.x, pj.y)
             ctx.stroke()
           }
         }
@@ -1332,7 +1320,9 @@ function renderAnswerWithCitations(
       {parts.map((part, i) => {
         const match = part.match(/^\[(\d+)\]$/)
         if (match) {
-          const id = parseInt(match[1])
+          const idStr = match[1]
+          if (!idStr) return <span key={i}>{part}</span>
+          const id = parseInt(idStr)
           return (
             <span
               key={i}
