@@ -35,7 +35,7 @@ function extractEntities(query: string): string[] {
   const entities: string[] = []
 
   const topicMatch = query.match(/\b(?:what|who|which|about)\s+(?:is|are|was|were)\s+(.+?)(?:\s*[?.!]|$)/i)
-  if (topicMatch) {
+  if (topicMatch?.[1]) {
     entities.push(topicMatch[1].trim())
   }
 

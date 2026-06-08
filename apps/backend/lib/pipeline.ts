@@ -11,7 +11,7 @@ import { analyzeQuery } from "./query-understanding"
 import { hybridRetrieve } from "./retrieval"
 import { multiLayerRerank } from "./reranking"
 import { assembleContext, extractFollowUps } from "./assembly"
-import { generateAnswer } from "./generation"
+import { generateAnswer, getModel, prepareSourcesForGeneration } from "./generation"
 import { bindCitations } from "./citations"
 
 export async function* runPipeline(
@@ -48,7 +48,7 @@ export async function* runPipeline(
   // Stage 3: Multi-Layer Reranking (L1 → L2 → L3)
   yield { stage: "reranking", data: { candidates: retrievalResults.length } }
   const reranked = await multiLayerRerank(analysis.rewritten, retrievalResults)
-  rerankedSources = reranked.sources
+  rerankedSources = prepareSourcesForGeneration(reranked.sources)
   discardedCount = reranked.discarded
   yield {
     stage: "reranking",
@@ -61,13 +61,14 @@ export async function* runPipeline(
 
   // Stage 4: Prompt Assembly with pre-embedded citations
   yield { stage: "assembly", data: { sources: rerankedSources.length } }
-  const assembled = assembleContext(analysis.rewritten, rerankedSources)
+  const assembled = assembleContext(analysis.original, rerankedSources)
   yield { stage: "assembly", data: { promptLength: assembled.prompt.length } }
 
   // Stage 5: Constrained LLM Synthesis (streaming)
-  yield { stage: "generation", data: { model: "mock-llm-4o", sources: rerankedSources.length } }
+  const model = getModel()
+  yield { stage: "generation", data: { model, sources: rerankedSources.length } }
 
-  const stream = generateAnswer(assembled.prompt, rerankedSources)
+  const stream = generateAnswer(analysis.original, rerankedSources)
   for await (const chunk of stream) {
     answer += chunk
     yield { stage: "generation", data: { chunk } }
@@ -89,7 +90,7 @@ export async function* runPipeline(
     queryAnalysis: analysis,
     retrievalCount: retrievalResults.length,
     rerankedCount: rerankedSources.length,
-    model: "mock-llm-4o",
+    model,
     latencyMs,
   }
 

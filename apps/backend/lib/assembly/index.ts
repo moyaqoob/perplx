@@ -1,51 +1,35 @@
 import type { RerankedSource, AssembledContext } from "../types"
 
+const MAX_SOURCE_CHARS = 2500
+
+function trimSourceContent(content: string): string {
+  const trimmed = content.trim()
+  if (trimmed.length <= MAX_SOURCE_CHARS) return trimmed
+  return `${trimmed.slice(0, MAX_SOURCE_CHARS)}\n[... content truncated ...]`
+}
+
+export function formatSourceBlocks(sources: RerankedSource[]): string {
+  return sources
+    .map((s) => {
+      const body = trimSourceContent(s.content || s.snippet || "")
+      return `<source id="${s.id}">
+URL: ${s.url}
+Title: ${s.title}
+${s.date ? `Date: ${s.date}\n` : ""}Content:
+${body}
+</source>`
+    })
+    .join("\n\n")
+}
+
 export function assembleContext(
   query: string,
   sources: RerankedSource[],
 ): AssembledContext {
-  const contextBlocks = sources.map((s) => {
-    return `<source id="${s.id}">
-URL: ${s.url}
-Title: ${s.title}
-${s.date ? `Date: ${s.date}` : ""}
-Content:
-${s.content}
-</source>`
-  })
-
-  const contextStr = contextBlocks.join("\n\n")
-
-  const prompt = buildPrompt(query, contextStr, sources)
+  const sourceContext = formatSourceBlocks(sources)
+  const prompt = `${sourceContext}\n\nQuestion: ${query}`
 
   return { sources, prompt }
-}
-
-function buildPrompt(
-  query: string,
-  context: string,
-  sources: RerankedSource[],
-): string {
-  const sourceMeta = sources
-    .map((s) => `[${s.id}] ${s.title} - ${s.url}`)
-    .join("\n")
-
-  return `You are Perplx, an AI research assistant. Answer the user's question based ONLY on the provided sources. Cite sources inline using [1], [2], etc.
-
-Rules:
-- Use information from the sources to answer accurately.
-- If the sources don't contain enough information, say so.
-- Cite sources next to the specific claim they support using [source_id].
-- Use multiple citations where appropriate.
-- Format your answer clearly with paragraphs and bullet points where helpful.
-
-Sources:
-${context}
-
-Reference:
-${sourceMeta}
-
-Question: ${query}`
 }
 
 export function extractFollowUps(query: string): string[] {

@@ -24,8 +24,11 @@ const dmMono = DM_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aletheia",
+  title: "Perplx",
   description: "Metaphysical Search Engine — Witness how it knows.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

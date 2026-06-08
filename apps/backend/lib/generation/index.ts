@@ -1,116 +1,130 @@
+import { Mistral } from "@mistralai/mistralai"
+import type { ContentChunk } from "@mistralai/mistralai/models/components"
+import { formatSourceBlocks } from "../assembly"
 import type { RerankedSource } from "../types"
 
+const MAX_GENERATION_SOURCES = 5
+const MIN_SOURCE_CHARS = 80
+
+let client: Mistral | null = null
+
+function getClient(): Mistral {
+  if (!client) {
+    const key = process.env.MISTRAL_API_KEY
+    if (!key) throw new Error("MISTRAL_API_KEY is not set. Add it to apps/backend/.env")
+    client = new Mistral({ apiKey: key })
+  }
+  return client
+}
+
+export function getModel(): string {
+  return process.env.LLM_MODEL || "mistral-small-latest"
+}
+
+function getTemperature(): number {
+  const value = Number(process.env.LLM_TEMPERATURE)
+  return Number.isFinite(value) ? value : 0
+}
+
+function getMaxTokens(): number {
+  return Number(process.env.LLM_MAX_TOKENS) || 2048
+}
+
+function extractDeltaText(content: string | ContentChunk[] | null | undefined): string {
+  if (!content) return ""
+  if (typeof content === "string") return content
+  return content
+    .map((chunk) => (chunk.type === "text" ? chunk.text : ""))
+    .join("")
+}
+
+function selectSourcesForGeneration(sources: RerankedSource[]): RerankedSource[] {
+  return sources
+    .filter((s) => (s.content || s.snippet || "").trim().length >= MIN_SOURCE_CHARS)
+    .slice(0, MAX_GENERATION_SOURCES)
+    .map((s, i) => ({ ...s, id: i + 1 }))
+}
+
+export function prepareSourcesForGeneration(sources: RerankedSource[]): RerankedSource[] {
+  return selectSourcesForGeneration(sources)
+}
+
+function buildGroundedPrompt(query: string, sources: RerankedSource[]): {
+  system: string
+  user: string
+} {
+  const sourceBlocks = formatSourceBlocks(sources)
+  const sourceIds = sources.map((s) => s.id).join(", ")
+
+  const system = `You are Perplx, a research assistant. You answer ONLY from the source documents in the user message.
+
+Rules:
+1. Every sentence must come from the sources. Do not use outside knowledge.
+2. Every factual sentence must end with a citation [N] using a valid source id (${sourceIds}).
+3. If the sources cannot answer the question, reply ONLY with: "The provided sources do not contain enough information to answer this question." Then briefly list what the sources do say, each with citations.
+4. Do not invent facts, numbers, dates, names, or quotes.
+5. Do not repeat sentences. Write once, clearly and concisely.
+6. Do not add introductions, conclusions, or filler.`
+
+  const user = `${sourceBlocks}
+
+Question: ${query}
+
+Answer using ONLY the sources above. Cite every claim.`
+
+  return { system, user }
+}
+
 export async function* generateAnswer(
-  prompt: string,
+  query: string,
   sources: RerankedSource[],
 ): AsyncGenerator<string> {
-  const segments = buildMockResponse(sources)
+  if (sources.length === 0) {
+    yield "I couldn't find any relevant sources to answer this question. Try rephrasing your query."
+    return
+  }
 
-  for (const segment of segments) {
-    await sleep(25 + Math.random() * 35)
-    yield segment
+  const { system, user } = buildGroundedPrompt(query, sources)
+
+  try {
+    const stream = await getClient().chat.stream({
+      model: getModel(),
+      temperature: getTemperature(),
+      maxTokens: getMaxTokens(),
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    })
+
+    for await (const event of stream) {
+      const text = extractDeltaText(event.data?.choices[0]?.delta?.content)
+      if (text) yield text
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error"
+    console.error("Mistral generation error:", message)
+
+    if (message.includes("API key") || message.includes("Unauthorized")) {
+      yield "⚠️ **LLM not configured.** Set `MISTRAL_API_KEY` in `apps/backend/.env` to enable AI-powered answers.\n\n"
+      return
+    }
+
+    yield fallbackGeneration(query, sources)
   }
 }
 
-function buildMockResponse(sources: RerankedSource[]): string[] {
-  const hasAI = sources.some((s) =>
-    s.title.toLowerCase().includes("artificial intelligence") ||
-    s.content.toLowerCase().includes("artificial intelligence")
-  )
-  const hasML = sources.some((s) =>
-    s.title.toLowerCase().includes("machine learning") ||
-    s.content.toLowerCase().includes("machine learning")
-  )
-  const hasDL = sources.some((s) =>
-    s.title.toLowerCase().includes("deep learning") ||
-    s.content.toLowerCase().includes("deep learning")
-  )
-  const hasNLP = sources.some((s) =>
-    s.title.toLowerCase().includes("natural language") ||
-    s.content.toLowerCase().includes("natural language processing")
-  )
-  const hasNN = sources.some((s) =>
-    s.title.toLowerCase().includes("neural network") ||
-    s.content.toLowerCase().includes("neural network")
-  )
-  const hasGPT = sources.some((s) =>
-    s.title.toLowerCase().includes("gpt") ||
-    s.content.toLowerCase().includes("generative pre-trained")
-  )
-  const hasLLM = sources.some((s) =>
-    s.title.toLowerCase().includes("large language model") ||
-    s.content.toLowerCase().includes("language model")
-  )
-  const hasRAG = sources.some((s) =>
-    s.title.toLowerCase().includes("retrieval-augmented") ||
-    s.content.toLowerCase().includes("retrieval-augmented generation")
-  )
+function fallbackGeneration(query: string, sources: RerankedSource[]): string {
+  const parts: string[] = [
+    `The provided sources contain the following about **${query}**:\n\n`,
+  ]
 
-  const source = (id: number) => `[${id}]`
-  const findId = (keyword: string): number => {
-    const s = sources.find((s) =>
-      s.title.toLowerCase().includes(keyword) ||
-      s.content.toLowerCase().includes(keyword)
-    )
-    return s?.id ?? 1
+  for (const source of sources) {
+    const excerpt = (source.content || source.snippet)?.slice(0, 400).trim()
+    if (excerpt) {
+      parts.push(`[${source.id}] ${excerpt}\n\n`)
+    }
   }
 
-  const segments: string[] = []
-
-  segments.push("Based on the search results, here is a comprehensive overview of the topic.")
-
-  segments.push("\n\n")
-
-  if (hasAI) {
-    const id = findId("artificial intelligence")
-    segments.push(`**Artificial Intelligence (AI)** refers to the simulation of human intelligence in machines that are programmed to think and learn like humans ${source(id)}. AI systems perceive their environment and take actions to achieve goals. The field has evolved significantly since its inception in the 1950s and now powers everything from recommendation systems to autonomous vehicles.`)
-  }
-
-  if (hasML) {
-    const id = findId("machine learning")
-    segments.push(`\n\n**Machine Learning (ML)** is a core subfield of AI that focuses on algorithms that improve through experience ${source(id)}. ML algorithms build models from training data to make predictions or decisions without being explicitly programmed. Key paradigms include supervised learning (labeled data), unsupervised learning (finding patterns), and reinforcement learning (learning through rewards).`)
-  }
-
-  if (hasDL) {
-    const id = findId("deep learning")
-    segments.push(`\n\n**Deep Learning** extends machine learning using neural networks with multiple layers ${source(id)}. These deep neural networks can model complex patterns in data and have driven breakthroughs in image recognition, speech processing, and game playing. The "deep" refers to the multiple hidden layers that progressively extract higher-level features from raw input.`)
-  }
-
-  if (hasNLP) {
-    const id = findId("natural language")
-    segments.push(`\n\n**Natural Language Processing (NLP)** enables computers to understand, interpret, and generate human language ${source(id)}. NLP combines computational linguistics with statistical models to process text and speech. Modern NLP is dominated by transformer-based models that can handle tasks like translation, sentiment analysis, and question answering with human-level performance.`)
-  }
-
-  if (hasNN) {
-    const id = findId("neural network")
-    segments.push(`\n\n**Neural Networks** are computing systems inspired by biological neural networks in the brain ${source(id)}. They consist of interconnected nodes (neurons) organized in layers. Each connection has a weight that adjusts during training. The universal approximation theorem shows that neural networks can approximate any continuous function, making them extraordinarily versatile for learning tasks.`)
-  }
-
-  if (hasGPT) {
-    const id = findId("gpt")
-    segments.push(`\n\n**Generative Pre-trained Transformers (GPT)** represent a breakthrough in language AI ${source(id)}. These models use the transformer architecture with multi-head attention mechanisms. GPT models are pre-trained on massive text corpora and then fine-tuned for specific tasks. The "generative" aspect allows them to produce coherent, contextually relevant text across a wide range of topics and styles.`)
-  }
-
-  if (hasLLM) {
-    const id = findId("large language model")
-    segments.push(`\n\n**Large Language Models (LLMs)** are neural networks with hundreds of billions of parameters trained on internet-scale text data ${source(id)}. These models exhibit emergent abilities — capabilities not present in smaller models — including in-context learning, reasoning, and code generation. LLMs form the foundation of modern AI assistants and have transformed how humans interact with machines.`)
-  }
-
-  if (hasRAG) {
-    const id = findId("retrieval-augmented")
-    segments.push(`\n\n**Retrieval-Augmented Generation (RAG)** combines information retrieval with text generation to improve accuracy and reduce hallucination ${source(id)}. RAG systems retrieve relevant documents from a knowledge base and use them as context for generation. This architecture is what powers systems like Perplexity, enabling them to provide cited, verifiable answers grounded in real-time web content rather than relying solely on parametric knowledge.`)
-  }
-
-  if (hasAI && hasML && hasDL) {
-    segments.push(`\n\n**Summary**: AI is the broad field of creating intelligent machines. ML is the subset that learns from data. DL is the subset of ML using deep neural networks. Together with NLP, neural networks, and LLMs, these technologies form the modern AI stack that powers everything from search engines to autonomous systems ${source(findId("artificial intelligence"))}${source(findId("machine learning"))}${source(findId("deep learning"))}.`)
-  }
-
-  segments.push("\n\n")
-  segments.push("Hope this helps! Let me know if you'd like to dive deeper into any specific aspect.")
-
-  return segments
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms))
+  return parts.join("")
 }

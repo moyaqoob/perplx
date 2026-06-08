@@ -1,8 +1,10 @@
+import "dotenv/config"
 import express from "express"
 import cors from "cors"
 import { runPipeline } from "./lib/pipeline"
 
 const app = express()
+const PORT = Number(process.env.PORT) || 3001
 
 app.use(cors())
 app.use(express.json())
@@ -29,6 +31,7 @@ app.post("/api/search", async (req, res) => {
     res.write(`data: ${JSON.stringify({ stage: "done" })}\n\n`)
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error"
+    console.error("Pipeline error:", errorMessage)
     res.write(
       `data: ${JSON.stringify({ stage: "error", error: errorMessage })}\n\n`,
     )
@@ -41,6 +44,6 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" })
 })
 
-app.listen(3001, () => {
-  console.log("⟳ Perplx backend running on http://localhost:3001")
+app.listen(PORT, () => {
+  console.log(`⟳ Perplx backend running on http://localhost:${PORT}`)
 })
