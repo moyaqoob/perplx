@@ -1,0 +1,10 @@
+**/node_modules
+**/.next
+**/.turbo
+.git
+.gitignore
+**/.env
+**/.env.*
+**/*.md
+**/Dockerfile
+apps/backend
